@@ -8,11 +8,14 @@ appointment_bp = Blueprint("appointment_bp", __name__)
 
 ALLOWED_STATUSES = {"Booked", "Cancelled", "Completed"}
 
+
 def parse_date(d: str):
     return datetime.strptime(d, "%Y-%m-%d").date()
 
+
 def parse_time(t: str):
     return datetime.strptime(t, "%H:%M").time()
+
 
 def to_dict(a: Appointment):
     return {
@@ -23,7 +26,7 @@ def to_dict(a: Appointment):
         "start_time": str(a.start_time),
         "end_time": str(a.end_time),
         "status": a.status,
-        "created_at": a.created_at.isoformat()
+        "created_at": a.created_at.isoformat() if a.created_at else None,
     }
 
 
@@ -31,27 +34,48 @@ def to_dict(a: Appointment):
 def book_appointment():
     data = request.get_json()
 
-    doctor = Doctor.query.get(data["doctor_id"])
-    patient = Patient.query.get(data["patient_id"])
+    if not data:
+        return jsonify({"error": "Invalid JSON data"}), 400
+
+    doctor = Doctor.query.get(data.get("doctor_id"))
+    patient = Patient.query.get(data.get("patient_id"))
+
     if not doctor or not patient:
         return jsonify({"error": "Doctor or Patient not found"}), 404
 
-    appt_date = parse_date(data["appointment_date"])
-    start = parse_time(data["start_time"])
-    end = parse_time(data["end_time"])
+    try:
+        appt_date = parse_date(data["appointment_date"])
+        start = parse_time(data["start_time"])
+        end = parse_time(data["end_time"])
+    except Exception:
+        return jsonify({"error": "Invalid date/time format"}), 400
 
-    
     if appt_date < date.today():
         return jsonify({"error": "Appointment date cannot be in the past"}), 400
+
     if start >= end:
         return jsonify({"error": "start_time must be less than end_time"}), 400
 
-  
     if start < doctor.available_from or end > doctor.available_to:
         return jsonify({"error": "Outside doctor's available time"}), 400
 
-   
-    existing = Appointment.query.filter(
+    
+    patient_conflict = Appointment.query.filter(
+        Appointment.patient_id == patient.id,
+        Appointment.appointment_date == appt_date,
+        Appointment.status == "Booked",
+        Appointment.start_time < end,
+        Appointment.end_time > start
+    ).first()
+
+    if patient_conflict:
+        return jsonify({
+            "error": "Patient already has an appointment at this time",
+            "doctor_id": patient_conflict.doctor_id
+        }), 400
+
+    
+    doctor_conflict = Appointment.query.filter(
         Appointment.doctor_id == doctor.id,
         Appointment.appointment_date == appt_date,
         Appointment.status == "Booked",
@@ -59,9 +83,12 @@ def book_appointment():
         Appointment.end_time > start
     ).first()
 
-    if existing:
-        return jsonify({"error": "Time slot already booked"}), 400
+    if doctor_conflict:
+        return jsonify({
+            "error": "Doctor already has an appointment at this time"
+        }), 400
 
+    
     appt = Appointment(
         doctor_id=doctor.id,
         patient_id=patient.id,
@@ -74,8 +101,15 @@ def book_appointment():
     db.session.add(appt)
     db.session.commit()
 
-    audit("APPOINTMENT_BOOKED", f"appointment_id={appt.id}, doctor_id={doctor.id}, patient_id={patient.id}")
-    return jsonify({"message": "Appointment booked successfully", "appointment": to_dict(appt)}), 201
+    audit(
+        "APPOINTMENT_BOOKED",
+        f"appointment_id={appt.id}, doctor_id={doctor.id}, patient_id={patient.id}"
+    )
+
+    return jsonify({
+        "message": "Appointment booked successfully",
+        "appointment": to_dict(appt)
+    }), 201
 
 
 
@@ -92,18 +126,30 @@ def list_appointments():
     if date_str:
         try:
             d = parse_date(date_str)
+            query = query.filter(Appointment.appointment_date == d)
         except ValueError:
             return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
-        query = query.filter(Appointment.appointment_date == d)
 
-    appts = query.order_by(Appointment.appointment_date.desc(), Appointment.start_time.asc()).all()
-    return jsonify([to_dict(a) for a in appts]), 200
+    appointments = query.all()
+    return jsonify([to_dict(a) for a in appointments]), 200
+
+
+
+@appointment_bp.route("/appointments/<int:appt_id>", methods=["GET"])
+def get_appointment(appt_id):
+    appt = Appointment.query.get(appt_id)
+
+    if not appt:
+        return jsonify({"error": "Appointment not found"}), 404
+
+    return jsonify(to_dict(appt)), 200
 
 
 
 @appointment_bp.route("/appointments/<int:appt_id>/status", methods=["PUT"])
 def update_status(appt_id):
     appt = Appointment.query.get(appt_id)
+
     if not appt:
         return jsonify({"error": "Appointment not found"}), 404
 
@@ -111,22 +157,29 @@ def update_status(appt_id):
     new_status = data.get("status")
 
     if new_status not in ALLOWED_STATUSES:
-        return jsonify({"error": f"Invalid status. Allowed: {sorted(ALLOWED_STATUSES)}"}), 400
+        return jsonify({"error": "Invalid status"}), 400
 
     if appt.status in {"Completed", "Cancelled"}:
-        return jsonify({"error": f"Cannot change status from {appt.status}"}), 400
+        return jsonify({"error": "Cannot change completed or cancelled appointment"}), 400
 
     appt.status = new_status
     db.session.commit()
 
-    audit("APPOINTMENT_STATUS_UPDATED", f"appointment_id={appt.id}, new_status={new_status}")
-    return jsonify({"message": "Status updated", "appointment": to_dict(appt)}), 200
+    audit(
+        "APPOINTMENT_STATUS_UPDATED",
+        f"appointment_id={appt.id}, new_status={new_status}"
+    )
 
+    return jsonify({
+        "message": "Status updated successfully",
+        "appointment": to_dict(appt)
+    }), 200
 
 
 @appointment_bp.route("/appointments/<int:appt_id>", methods=["DELETE"])
 def delete_appointment(appt_id):
     appt = Appointment.query.get(appt_id)
+
     if not appt:
         return jsonify({"error": "Appointment not found"}), 404
 
@@ -134,4 +187,5 @@ def delete_appointment(appt_id):
     db.session.commit()
 
     audit("APPOINTMENT_DELETED", f"appointment_id={appt_id}")
-    return jsonify({"message": "Appointment deleted"}), 200
+
+    return jsonify({"message": "Appointment deleted successfully"}), 200
