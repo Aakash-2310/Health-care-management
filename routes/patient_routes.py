@@ -5,7 +5,6 @@ from extensions import db
 patient_bp = Blueprint("patient_bp", __name__)
 
 
-# CREATE PATIENT
 @patient_bp.route("/patients", methods=["POST"])
 def add_patient():
     data = request.get_json()
@@ -29,7 +28,7 @@ def add_patient():
     }), 201
 
 
-# GET ALL PATIENTS
+
 @patient_bp.route("/patients", methods=["GET"])
 def get_patients():
     patients = Patient.query.all()
@@ -47,7 +46,7 @@ def get_patients():
     return jsonify(result), 200
 
 
-# UPDATE PATIENT
+
 @patient_bp.route("/patients/<int:id>", methods=["PUT"])
 def update_patient(id):
     patient = Patient.query.get(id)
@@ -67,7 +66,6 @@ def update_patient(id):
     return jsonify({"message": "Patient updated successfully"}), 200
 
 
-# DELETE PATIENT
 @patient_bp.route("/patients/<int:id>", methods=["DELETE"])
 def delete_patient(id):
     patient = Patient.query.get(id)
