@@ -1,9 +1,3 @@
-Here is a clean, professional, human-written `README.md` without emojis and written in a natural style.
-
-You can copy and paste this directly into your `README.md` file.
-
----
-
 # Hospital Appointment System (Flask API)
 
 ## Overview
